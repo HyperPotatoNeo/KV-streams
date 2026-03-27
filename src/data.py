@@ -271,24 +271,18 @@ def load_data(
     all_labels = []
     all_attention_masks = []
     skipped = 0
-    short_skipped = 0
-    min_tokens_for_compaction = 3 * config.W  # need >= 3 blocks for meaningful compaction
 
     for messages in interleaved_messages:
         result = _process_example(messages, tokenizer, config.max_seq_len, config.W)
         if result is None:
             skipped += 1
             continue
-        # Skip sequences too short for meaningful compaction training
-        if result["input_ids"].shape[0] < min_tokens_for_compaction:
-            short_skipped += 1
-            continue
         all_input_ids.append(result["input_ids"])
         all_labels.append(result["labels"])
         all_attention_masks.append(result["attention_mask"])
 
-    logger.info("Processed %d examples, skipped %d (empty), %d (too short < %d tokens)",
-                len(all_input_ids), skipped, short_skipped, min_tokens_for_compaction)
+    logger.info("Processed %d examples, skipped %d (empty/no assistant tokens)",
+                len(all_input_ids), skipped)
 
     # Split into train/val
     n_total = len(all_input_ids)

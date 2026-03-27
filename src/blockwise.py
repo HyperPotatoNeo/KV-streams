@@ -107,10 +107,12 @@ def blockwise_train_step(
             # Block 0 or Condition E: empty cache.
             past_cache = DynamicCache()
 
-        # 6. Build 4D attention mask with learnable bias on compact_kv columns
+        # 6. Build 4D attention mask with learnable bias + padding masking
+        block_padding = attention_mask[:, start:end]  # (B, W) — 1=real, 0=padding
         attn_mask = build_4d_attention_mask(
             B, W + P, P_past + W + P, P_past,
             model.compact_attn_bias, device, dtype,
+            padding_mask=block_padding,
         )
 
         # 7. RoPE position embeddings (cos, sin)
@@ -236,10 +238,12 @@ def blockwise_forward_eval(
         else:
             past_cache = DynamicCache()
 
-        # 6. Build 4D attention mask with bias
+        # 6. Build 4D attention mask with bias + padding masking
+        block_padding = attention_mask[:, start:end]  # (B, W)
         attn_mask = build_4d_attention_mask(
             B, W + P, P_past + W + P, P_past,
             model.compact_attn_bias, device, dtype,
+            padding_mask=block_padding,
         )
 
         # 7. RoPE position embeddings

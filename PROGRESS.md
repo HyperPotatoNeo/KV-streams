@@ -91,8 +91,44 @@ Per-block ppl is remarkably uniform (5.5-6.4) — compaction carries information
 
 ### Scale-Up (Phase 2b, 2026-03-27)
 
-Added Condition E: blockwise training with no compact_kv (within-block only baseline).
-Running B and E at 660 steps, 50K examples/dataset, grad_accum=4.
+#### Infrastructure changes
+- **DDP support**: Manual gradient all-reduce (no DDP wrapper — avoids .module indirection
+  and multiple-backward-per-step issues with BPTT). Adversarial reviewed.
+- **Condition E**: Blockwise with no compact_kv (within-block only, fairest baseline for B)
+- **WSD LR schedule**: 50-step warmup → stable → 20% cosine decay (replaced cosine-with-warmup)
+- **Per-step logging**: W&B + train_loss.jsonl every step (was every 10)
+
+#### Bug fixes (all adversarial reviewed, 89/89 tests pass)
+1. **A/C double-shift labels** (BLOCKING): HF's model(labels=...) internally shifts, but our
+   labels are pre-shifted → model predicted 2 tokens ahead. Fixed: manual CE loss for A/C.
+2. **Padding not masked in attention** (MODERATE): Padding tokens participated in attention.
+   Fixed: build_4d_attention_mask now accepts padding_mask, sets padding KV columns to -inf.
+3. **collate_fn pad token** (MODERATE): Padded with token ID 0 (real vocab token) instead of
+   151643 (Qwen3 EOS/pad). Fixed: pass tokenizer.pad_token_id to collate_fn.
+4. **Embed norm clamp timing**: Was before optimizer.step() (clamped values overwritten).
+   Moved to after.
+5. **set_epoch**: Started at 1, skipping epoch 0. Fixed.
+6. **all_reduce_gradients**: Iterated frozen params. Added requires_grad filter.
+7. **Min-length filter removed**: Was filtering sequences < 3*W tokens. Removed to allow
+   all sequences (short ones still train LoRA, only multi-block sequences train compaction).
+8. **Integration test updated**: test_integration.py A/C conditions now use manual CE loss
+   matching train.py production code.
+
+#### Current runs (launched 2026-03-27 ~10:45 AM PDT)
+6 conditions across 6 NERSC Perlmutter nodes (24× A100-80GB), 4-GPU DDP per condition.
+All: 600 steps, lr=1e-4, WSD schedule, 50K examples/dataset, unfiltered data.
+
+| Node | Condition | W | P | K | batch_total | Status |
+|------|-----------|---|---|---|-------------|--------|
+| nid008205 | **B W=512** | 512 | 64 | 8 | 512 (4×4×32) | Running |
+| nid008268 | D (random kv) | 128 | 16 | 2 | 512 (4×8×16) | Running |
+| nid008297 | E (no kv) | 128 | 16 | 2 | 512 (4×8×16) | Running |
+| nid008304 | B K=4 | 128 | 16 | 4 | 512 (4×8×16) | Running |
+| nid008448 | B P=32 | 128 | 32 | 2 | 512 (4×8×16) | Running |
+| nid008480 | A (full ctx) | full | - | - | 512 (4×2×64) | Running |
+
+Estimated: ~14-27h per blockwise condition, ~80h for A.
+Checkpoints every 50 steps. 48-hour node allocations. Reservation until 2026-04-05.
 
 | Exp | Config | Steps | val_ppl | cross_block_ppl | Notes |
 |-----|--------|-------|---------|-----------------|-------|

@@ -24,6 +24,7 @@ def build_4d_attention_mask(
     compact_attn_bias: nn.Parameter,
     device: torch.device,
     dtype: torch.dtype,
+    padding_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Build 4D float attention mask with learnable bias on compact_kv columns.
 
@@ -43,6 +44,8 @@ def build_4d_attention_mask(
         compact_attn_bias: (num_q_heads,) learnable bias, typically init to -2.0.
         device: Torch device.
         dtype: Torch dtype (bfloat16 typically).
+        padding_mask: (B, W) binary mask (1=real, 0=padding) for text tokens in this
+            block. If provided, padding KV columns are set to -inf. None = no masking.
 
     Returns:
         mask: (B, num_q_heads, query_len, kv_len) float tensor.
@@ -79,6 +82,21 @@ def build_4d_attention_mask(
     # Place into the current block region of the full mask
     # broadcast across B and num_heads
     mask[:, :, :, P_past:] = causal.unsqueeze(0).unsqueeze(0)
+
+    # Apply padding mask: set padding KV columns to -inf for all queries
+    # padding_mask is (B, W) for text tokens; compaction tokens (last P) are always real
+    if padding_mask is not None:
+        W = padding_mask.shape[1]
+        # Build full KV padding mask: (B, kv_len) — 1=real, 0=padding
+        # compact_kv positions (0:P_past) are always real
+        # text positions (P_past:P_past+W) use the padding_mask
+        # compaction token positions (P_past+W:) are always real
+        kv_pad = torch.ones(B, kv_len, device=device, dtype=torch.bool)
+        kv_pad[:, P_past:P_past + W] = padding_mask.bool()
+        # Where kv_pad is 0 (padding), set mask to -inf for all query positions and heads
+        # Shape: (B, 1, 1, kv_len) for broadcasting
+        pad_mask_4d = kv_pad.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, kv_len)
+        mask = mask.masked_fill(~pad_mask_4d, min_val)
 
     return mask
 

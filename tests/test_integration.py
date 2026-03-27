@@ -100,21 +100,37 @@ def run_mini_training(config, model=None, num_steps=10, return_losses=False):
 
         optimizer.zero_grad(set_to_none=True)
 
-        if config.condition in ("B", "D"):
+        if config.condition in ("B", "D", "E"):
             loss_val = blockwise_train_step(model, input_ids, labels, attention_mask, config)
         elif config.condition == "A":
-            outputs = model(input_ids=input_ids, labels=labels, attention_mask=attention_mask)
-            loss_val = outputs.loss.item()
-            outputs.loss.backward()
+            # Manual loss (no HF internal shift — labels are pre-shifted)
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits.float()
+            valid_mask = labels != -100
+            num_valid = valid_mask.sum().item()
+            if num_valid > 0:
+                loss = torch.nn.functional.cross_entropy(
+                    logits[valid_mask], labels[valid_mask], reduction="mean")
+                loss_val = loss.item()
+                loss.backward()
+            else:
+                loss_val = 0.0
         elif config.condition == "C":
             W = config.W
-            outputs = model(
-                input_ids=input_ids[:, -W:],
-                labels=labels[:, -W:],
-                attention_mask=attention_mask[:, -W:],
-            )
-            loss_val = outputs.loss.item()
-            outputs.loss.backward()
+            trunc_ids = input_ids[:, -W:]
+            trunc_labels = labels[:, -W:]
+            trunc_mask = attention_mask[:, -W:]
+            outputs = model(input_ids=trunc_ids, attention_mask=trunc_mask)
+            logits = outputs.logits.float()
+            valid_mask = trunc_labels != -100
+            num_valid = valid_mask.sum().item()
+            if num_valid > 0:
+                loss = torch.nn.functional.cross_entropy(
+                    logits[valid_mask], trunc_labels[valid_mask], reduction="mean")
+                loss_val = loss.item()
+                loss.backward()
+            else:
+                loss_val = 0.0
 
         # Gradient clipping and optimizer step
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
