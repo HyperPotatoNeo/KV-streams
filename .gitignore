@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+outputs/
+*.pt
+*.ckpt
+.venv/
+uv-cache/
+hf_cache/
+*.sh
+!setup_container_node.sh

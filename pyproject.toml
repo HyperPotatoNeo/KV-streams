@@ -1,0 +1,19 @@
+[project]
+name = "kv-self-compaction-phase2"
+version = "0.1.0"
+description = "KV Self-Compaction Phase 2: Qwen3-0.6B-Base finetuning with learned compaction tokens"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.51.0",
+    "peft>=0.14.0",
+    "datasets>=3.0",
+    "pytest>=8.0",
+    "wandb>=0.19",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "gpu: tests that require GPU (deselect with '-m not gpu')",
+]
+testpaths = ["tests"]
