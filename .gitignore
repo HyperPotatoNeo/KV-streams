@@ -7,5 +7,11 @@ outputs/
 .venv/
 uv-cache/
 hf_cache/
-*.sh
-!setup_container_node.sh
+data_cache/
+wandb/
+logs/
+.claude/
+results/
+report/*.aux
+report/*.log
+report/*.out

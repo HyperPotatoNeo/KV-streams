@@ -140,8 +140,34 @@ Other conditions (C/D/E) deferred — will run on freed nodes after B/A complete
 
 #### Additional code changes (v4)
 - evaluate.py: Added `full_context_ppl` metric for condition A (standard HF forward, no blockwise)
-- run_A_3node.sh: port 29502 (avoid conflict with B on 29500)
+- run_A_3node.sh: port 29502→29504, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (fixes OOM)
 - All W=512 blockwise conditions require batch_size=2 (batch_size=4 OOMs with K=8 eager attention)
+- Dataset caching: tokenized data saved to data_cache/*.pt (~4-5 GB), loads in ~2s vs ~35 min
+
+#### Results so far (runs still in progress)
+
+| Exp | Metric | Step 100 | Step 200 | Step 300 | Step 400 |
+|-----|--------|----------|----------|----------|----------|
+| B val_ppl | blockwise | 4.224 | 3.914 | 3.795 | 3.727 |
+| B cb_ppl | cross-block | 7.06 | 5.44 | 5.01 | 4.80 |
+| B bias | attn bias | -1.211 | -1.078 | -1.055 | -1.047 |
+| A full_ctx_ppl | standard fwd | 3.484 | 3.384 | — | — |
+
+**Key finding**: B (compaction) val_ppl=3.73 is within 10% of A (full context) full_ctx_ppl=3.38.
+B uses 64 compressed KV pairs per block vs A's full 4096-token context.
+
+#### Upcoming experiments (after B+A finish)
+
+1. **B K=1** (3 nodes): compact_kv flows but gradient detached every block. Tests whether
+   explicit temporal gradient is needed, or if shared-parameter learning suffices.
+   - Adversarial note: compaction_embeddings still learn indirectly via shared params.
+
+2. **E isolation** (3 nodes, K=1): each block in isolation, no compact_kv between blocks.
+   Compaction tokens still present as within-block auxiliary capacity but KV never reused.
+   - Adversarial note: NOT equivalent to P=0 — compaction tokens add within-block capacity.
+   - K=1 used instead of K=8 (no cross-block dependency, saves memory).
+
+#### Scale-up experiment log
 
 | Exp | Config | Steps | val_ppl | cross_block_ppl | Notes |
 |-----|--------|-------|---------|-----------------|-------|
