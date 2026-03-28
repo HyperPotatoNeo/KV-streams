@@ -48,7 +48,12 @@ def extract_compact_kv(
     """
     compact_kv = []
     for layer_idx in range(num_layers):
-        k, v = cache[layer_idx]  # (B, num_kv_heads, seq_len, head_dim) each
+        # v5: cache.layers[i].keys/.values; v4: cache[i]
+        if hasattr(cache, "layers") and len(cache.layers) > layer_idx:
+            k = cache.layers[layer_idx].keys
+            v = cache.layers[layer_idx].values
+        else:
+            k, v = cache[layer_idx]  # v4 fallback
         compact_kv.append((
             k[:, :, -P:, :].clone(),
             v[:, :, -P:, :].clone(),

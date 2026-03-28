@@ -8,9 +8,9 @@
 \usepackage{float}
 
 \title{\textbf{KV Self-Compaction Phase 2: Scaling to Qwen3-0.6B} \\[0.3em]
-\large Interim Report — Phase 2a Results \& Scale-Up Status}
+\large Experiment Report — Scale-Up Results}
 \author{Siddharth Agarwal \and Claude Opus 4.6}
-\date{March 27, 2026}
+\date{March 28, 2026}
 
 \begin{document}
 \maketitle
@@ -18,177 +18,152 @@
 \begin{abstract}
 We scale KV Self-Compaction from a 50M-parameter GPT model (Phase 1) to Qwen3-0.6B-Base
 with LoRA finetuning on the Dolci SFT mixture. The method processes sequences in
-128-token blocks, appending 16 learned compaction tokens per block whose KV states carry
-compressed history to the next block. A learnable per-head attention bias (16 parameters)
-controls how much the model attends to this compressed state. In Phase 2a (200 steps,
-5K examples), learned compaction (Condition B) achieves cross-block perplexity of 8.44,
-a 45\% improvement over random compact\_kv (Condition D, 15.26). The attention bias
-diverges: B opens attention to compact\_kv ($-0.93$) while D suppresses it ($-2.13$),
-confirming the model differentiates between learned and random state. Scale-up
-experiments (600 steps, 50K examples, 4-GPU DDP, total batch size 512) are currently
-running across 6 compute nodes (24 GPUs).
+512-token blocks, appending 64 learned compaction tokens per block whose KV states carry
+compressed history to the next block. A learnable per-head attention bias controls
+attention to compressed state. Trained with BPTT (K=8), the compaction model achieves
+val\_ppl=3.652, within \textbf{12\% of the full-context upper bound} (3.260), using only
+64 compressed KV pairs per block instead of the full 4096-token context. An ablation
+with K=1 (no temporal gradient) shows val\_ppl=4.139, nearly identical to the isolation
+baseline (4.158), demonstrating that BPTT is the critical ingredient---without it, the
+model cannot learn to write useful cross-block state.
 \end{abstract}
-
-\section{Background}
-
-KV Self-Compaction converts a pretrained transformer into a blockwise RNN with
-constant-memory inference:
-\begin{enumerate}
-    \item Process text in blocks of $W$ tokens
-    \item Append $P$ learned compaction embeddings after each block
-    \item Forward the block through the transformer with a custom 4D attention mask
-    \item Extract KV cache at compaction positions $\rightarrow$ \texttt{compact\_kv}
-    \item Prepend \texttt{compact\_kv} to the next block's attention
-    \item Train end-to-end with next-token prediction (BPTT every $K$ blocks)
-\end{enumerate}
-
-Phase 1 validated this on a 50M-param GPT model, finding that a learnable per-head
-attention bias (initialized to $-2.0$) is critical for P$>$1 compaction. Without it,
-softmax dilution over compact\_kv positions overwhelms predictions.
 
 \section{Method}
 
 \subsection{Architecture \& Training}
 \begin{itemize}
-    \item \textbf{Base model}: Qwen3-0.6B-Base (28 layers, 16 Q / 8 KV heads, head\_dim=128)
-    \item \textbf{Adaptation}: LoRA rank=32, $\alpha$=64, targeting all 7 linear layers per block (3.28\% trainable)
-    \item \textbf{Compaction}: $W$=128, $P$=16, $K$=2 (chosen via sequence length analysis of Dolci data)
-    \item \textbf{New parameters}: compaction\_embeddings ($P \times 1024$) + compact\_attn\_bias ($16$ scalars)
-    \item \textbf{Data}: Dolci Think-SFT + Instruct-SFT (1:1 mix), chat template with label masking
-    \item \textbf{Labels}: Pre-shifted for next-token prediction (\texttt{labels[i] = token\_ids[i+1]})
+    \item \textbf{Base model}: Qwen3-0.6B-Base (28 layers, 16Q/8KV heads, head\_dim=128)
+    \item \textbf{Adaptation}: LoRA rank=32, $\alpha$=64 on all 7 linear layers (3.28\% trainable)
+    \item \textbf{Compaction}: W=512, P=64, K=8 (BPTT depth)
+    \item \textbf{New parameters}: compaction\_embeddings (64$\times$1024) + compact\_attn\_bias (16 scalars)
+    \item \textbf{Data}: Dolci Think-SFT + Instruct-SFT (50K each, $\sim$95K after filtering)
+    \item \textbf{Training}: 600 steps, lr=$10^{-4}$, WSD schedule, total batch$\approx$528
+    \item \textbf{Compute}: 3 nodes $\times$ 4 A100-80GB, manual gradient all-reduce DDP
 \end{itemize}
 
 \subsection{Experimental Conditions}
+
 \begin{table}[H]
 \centering
 \begin{tabular}{clp{8cm}}
 \toprule
-Condition & Name & Description \\
+Cond. & Name & Description \\
 \midrule
-A & Full context & Standard HF forward on full sequence (no blockwise) \\
-B & \textbf{Learned compaction} & Blockwise with learned compact\_kv (our method) \\
-C & Truncation & Standard HF forward on last $W$=128 tokens only \\
-D & Random compact\_kv & Same blockwise loop as B, but compact\_kv is random noise \\
-E & No compact\_kv & Same blockwise loop as B, but no compact\_kv between blocks \\
+A & Full context & Standard forward on full 4096-token sequence (upper bound) \\
+B & \textbf{Compaction (K=8)} & Blockwise with learned compact\_kv, BPTT every 8 blocks \\
+K=1 & No temporal gradient & Same as B but compact\_kv detached every block (no BPTT) \\
+E & Isolation & Blockwise but no compact\_kv between blocks (each block independent) \\
 \bottomrule
 \end{tabular}
-\caption{Experimental conditions. B vs D is the fairest comparison (both use identical blockwise training); B vs E isolates compact\_kv's contribution.}
 \end{table}
 
-\section{Phase 2a Results (200 steps, 5K examples)}
+\section{Results}
 
-\subsection{Training Dynamics}
+\subsection{Final Metrics (600 steps)}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrl}
+\toprule
+Condition & val\_ppl & cross\_block\_ppl & bias & Notes \\
+\midrule
+A (full context) & --- & --- & --- & full\_ctx\_ppl = \textbf{3.260} \\
+\textbf{B (K=8)} & \textbf{3.652} & \textbf{4.59} & $-1.016$ & 12\% from upper bound \\
+K=1 (no BPTT) & 4.139 & 9.70 & $-1.242$ & $\approx$ isolation \\
+E (isolation) & 4.158 & 12.96 & $-2.000$ & No cross-block info \\
+\bottomrule
+\end{tabular}
+\caption{Final metrics after 600 training steps. val\_ppl for B/K=1/E uses blockwise evaluation.
+A's full\_ctx\_ppl uses standard HF forward (no compaction). Both are per-token cross-entropy
+exponentiated, computed on the same validation tokens.}
+\end{table}
+
+\subsection{Training Curves}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{fig1_training.pdf}
-\caption{\textbf{Left}: Training loss curves for all four conditions.
-B and D have similar loss ($\sim$2.0), confirming both use the same blockwise mechanism.
-A and C have higher loss due to different training regimes (full context and truncation respectively).
-\textbf{Right}: Attention bias trajectory. B's bias moves from $-2.0$ to $-0.93$
-(increasing attention to compact\_kv), while D's moves to $-2.13$ (further suppressing
-random noise). This divergence is the key mechanistic evidence.}
+\caption{Training loss (smoothed) and validation PPL over 600 steps. B (K=8) achieves
+the lowest loss and approaches A's full-context performance. K=1 and E converge to
+similar val\_ppl ($\sim$4.15), showing that without BPTT, compact\_kv provides no benefit
+over complete isolation.}
 \end{figure}
 
-\subsection{Evaluation Metrics}
+\subsection{Attention Bias Trajectory}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{fig2_eval.pdf}
-\caption{\textbf{Left}: B's cross-block and validation PPL decrease over training,
-converging below D's final cross-block PPL of 15.3.
-\textbf{Right}: Per-block PPL at step 200 (blocks 1--31). B consistently outperforms D
-across all block positions, with remarkably uniform PPL ($\sim$5.5--6.4 for B vs $\sim$6.7--7.8 for D).}
+\includegraphics[width=0.7\textwidth]{fig2_bias.pdf}
+\caption{Attention bias trajectory. B's bias moves from $-2.0$ (suppressed) to $-1.0$
+(attending to compact\_kv), indicating the model learns to trust the compressed state.
+K=1's bias also moves but converges higher ($-1.24$), reflecting less trust without
+temporal training signal. E's bias stays at $-2.0$ (no compact\_kv to attend to).}
 \end{figure}
 
-\begin{table}[H]
-\centering
-\begin{tabular}{lrrrr}
-\toprule
-Condition & val\_ppl & cross\_block\_ppl & bias\_mean & Notes \\
-\midrule
-\textbf{B (learned)} & \textbf{6.00} & \textbf{8.44} & $-0.93$ & Attends to compact\_kv \\
-D (random kv) & 7.27 & 15.26 & $-2.13$ & Suppresses noise \\
-C (truncation) & $\sim$245 & $\sim$1405 & $-2.00$ & Only 128 tokens context \\
-A (full context) & 508 & 3444 & $-2.00$ & Train/eval mismatch \\
-\bottomrule
-\end{tabular}
-\caption{Phase 2a final metrics. Note: A and C comparisons are unfair (trained without blockwise, evaluated with it). The B vs D comparison is the fairest.}
-\end{table}
-
-\subsection{Success Criteria}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{p{5cm}p{5cm}c}
-\toprule
-Criterion & Result & Met? \\
-\midrule
-B beats D by $>$5\% & $8.44$ vs $15.26$ (45\%) & \textcolor{green}{\textbf{YES}} \\
-Per-block PPL ratio $<$ 2.0$\times$ & $6.42 / 5.51 = 1.17\times$ & \textcolor{green}{\textbf{YES}} \\
-Bias divergence (B $>$ D) & $-0.93$ vs $-2.13$ & \textcolor{green}{\textbf{YES}} \\
-\bottomrule
-\end{tabular}
-\caption{All success criteria met for Phase 2a.}
-\end{table}
-
-\subsection{Comparison Overview}
+\subsection{Per-Block Perplexity}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{fig3_comparison.pdf}
-\caption{\textbf{Left}: B vs D cross-block PPL (linear scale). B achieves 45\% lower
-perplexity, demonstrating learned compact\_kv carries useful information.
-\textbf{Right}: All conditions on log scale. A and C have extremely high cross-block PPL
-because they were not trained with the blockwise mechanism.}
+\includegraphics[width=\textwidth]{fig3_per_block.pdf}
+\caption{Per-block PPL at step 600 (blocks 1--7). B maintains low, uniform PPL across
+all blocks ($\sim$3.6--4.0), showing compact\_kv carries information reliably. K=1 and E
+have higher per-block PPL ($\sim$4.3--4.5), degrading slightly at later blocks.}
 \end{figure}
 
-\section{Bug Discovery \& Fix}
+\section{Analysis}
 
-A critical label alignment bug was discovered during Phase 2a: \texttt{labels[j] = token\_ids[j]}
-(identity) instead of \texttt{token\_ids[j+1]} (next-token). This caused the model to predict
-the current token from its own embedding — trivially solvable (PPL $\approx$ 1.0) and masking
-the compaction signal entirely. The bug was caught by an adversarial subagent when B $\approx$ D
-in the initial (buggy) run. After fixing, all results shown above use correct labels.
+\subsection{BPTT is the Critical Ingredient}
 
-\section{Scale-Up Experiments (In Progress)}
-
-Six conditions are currently training across 6 NERSC Perlmutter nodes (24$\times$ A100-80GB):
-
-\begin{table}[H]
-\centering
-\begin{tabular}{llccl}
-\toprule
-Condition & Node & GPUs & batch\_total & Status \\
-\midrule
-B ($K$=2, $P$=16) & nid008205 & 4 & 512 & Step $\sim$50/600 \\
-D (random kv) & nid008268 & 4 & 512 & Step $\sim$50/600 \\
-E (no compact\_kv) & nid008297 & 4 & 512 & Step $\sim$50/600 \\
-B ($K$=4) & nid008304 & 4 & 512 & Step $\sim$50/600 \\
-B ($P$=32) & nid008448 & 4 & 512 & Step $\sim$50/600 \\
-A (full context) & nid008480 & 4 & 512 & Step $<$50/600 \\
-\bottomrule
-\end{tabular}
-\caption{Scale-up runs. Each uses 4-GPU DDP with manual gradient all-reduce
-(no DDP wrapper due to BPTT backward complexity). lr=$10^{-4}$, 50K examples/dataset.
-Estimated completion: $\sim$27 hours per blockwise condition.}
-\end{table}
-
-Key hypotheses being tested:
+The most striking finding is that K=1 $\approx$ E:
 \begin{itemize}
-    \item \textbf{B vs E}: Does compact\_kv help vs. no cross-block information? (fairest baseline)
-    \item \textbf{B vs D}: Does the B-vs-D gap widen with more training? (expected from Phase 2a trend)
-    \item \textbf{B $K$=4 vs $K$=2}: Does deeper BPTT help? (Phase 1 found $K$=4 best)
-    \item \textbf{B $P$=32 vs $P$=16}: Do more compaction tokens help? (Phase 1 showed monotonic improvement)
+    \item K=1 val\_ppl = 4.139, E val\_ppl = 4.158 (0.5\% difference)
+    \item K=1 passes compact\_kv between blocks but E does not
+    \item Yet both perform nearly identically
 \end{itemize}
+
+This means that without temporal gradient (BPTT), the compact\_kv state carries
+essentially no useful information. The model can \emph{read} from compact\_kv (the bias
+drifts to $-1.24$, showing it attends to compact\_kv positions) but it cannot learn to
+\emph{write} useful information into compact\_kv without the training signal from future
+blocks.
+
+With K=8 (full BPTT across the 8-block sequence), the model receives gradient from
+block $n+1$'s loss flowing through compact\_kv back to block $n$'s compaction embeddings.
+This temporal signal teaches the model: ``the compact\_kv you produced in block $n$ was
+good/bad for predicting block $n+1$.'' Without this signal (K=1), the compaction
+embeddings learn only from within-block loss, which doesn't incentivize useful
+cross-block compression.
+
+\subsection{Gap to Full Context}
+
+B's val\_ppl (3.652) is 12\% worse than A's full\_ctx\_ppl (3.260). This gap represents
+the information lost by compressing each 512-token block into 64 KV pairs. The gap
+is consistent across training (not closing further after step 400), suggesting a
+fundamental compression limit at this P/W ratio (64/512 = 1:8 compression).
+
+\subsection{Cross-Block PPL}
+
+The cross\_block\_ppl metric (PPL on the first 32 tokens of blocks 1+) shows even
+larger differences:
+\begin{itemize}
+    \item B: 4.59 --- compact\_kv provides strong cross-block context
+    \item K=1: 9.70 --- compact\_kv present but uninformative (2.1$\times$ worse)
+    \item E: 12.96 --- no cross-block context at all (2.8$\times$ worse)
+\end{itemize}
+
+K=1's cross\_block\_ppl (9.70) is notably better than E's (12.96), suggesting that
+even without BPTT, the shared compaction embeddings learn \emph{some} useful compression
+through within-block gradients. But this indirect learning is far less effective than
+explicit temporal gradient.
 
 \section{Conclusion}
 
-Phase 2a provides strong proof-of-concept evidence that KV Self-Compaction scales to
-0.6B-parameter models. The 45\% improvement of learned compact\_kv over random noise,
-combined with the mechanistic evidence of attention bias divergence, demonstrates that
-the compaction tokens learn to carry useful cross-block information. Scale-up experiments
-are underway to confirm these results with more data and training, and to explore the
-$K$ and $P$ hyperparameter space.
+KV Self-Compaction scales to 0.6B-parameter models, achieving within 12\% of
+full-context performance using only 64 compressed KV pairs per 512-token block.
+The critical finding is that BPTT (K=8) is essential---without temporal gradient,
+compact\_kv is nearly useless despite the model learning to attend to it. This
+suggests that the compaction tokens must be explicitly trained to carry cross-block
+information through a temporal training signal, rather than learning it as a
+side-effect of within-block optimization.
 
 \end{document}

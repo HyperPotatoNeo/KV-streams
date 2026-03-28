@@ -150,7 +150,7 @@ def forward_layers(
 
     for layer in inner.layers:
         # hidden_states is passed as positional arg (required for gradient checkpointing compat)
-        hidden_states = layer(
+        result = layer(
             hidden_states,
             attention_mask=attention_mask_4d,
             position_ids=None,  # deprecated in Qwen3, use position_embeddings
@@ -159,6 +159,8 @@ def forward_layers(
             cache_position=cache_position,
             position_embeddings=position_embeddings,
         )
+        # v4 returns tensor, v5 may return tuple
+        hidden_states = result[0] if isinstance(result, tuple) else result
 
     hidden_states = inner.norm(hidden_states)
     return hidden_states, past_key_values

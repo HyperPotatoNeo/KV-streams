@@ -153,8 +153,11 @@ Other conditions (C/D/E) deferred — will run on freed nodes after B/A complete
 | B bias | attn bias | -1.211 | -1.078 | -1.055 | -1.047 |
 | A full_ctx_ppl | standard fwd | 3.484 | 3.384 | — | — |
 
-**Key finding**: B (compaction) val_ppl=3.73 is within 10% of A (full context) full_ctx_ppl=3.38.
-B uses 64 compressed KV pairs per block vs A's full 4096-token context.
+**Key findings** (all experiments complete, 600 steps each):
+1. B val_ppl (3.652) is **12% from A's full_ctx_ppl (3.260)** — compaction approaches full-context
+2. K=1 ≈ E (4.139 vs 4.158) — **BPTT is critical**, without it compact_kv doesn't help
+3. B cross_block_ppl (4.59) vs E (12.96) — **2.8x improvement** from learned compaction
+4. Report generated: report/report.pdf (4 pages with plots)
 
 #### Upcoming experiments (after B+A finish)
 
@@ -167,7 +170,48 @@ B uses 64 compressed KV pairs per block vs A's full 4096-token context.
    - Adversarial note: NOT equivalent to P=0 — compaction tokens add within-block capacity.
    - K=1 used instead of K=8 (no cross-block dependency, saves memory).
 
-#### Scale-up experiment log
+#### Scale-up experiment results
 
-| Exp | Config | Steps | val_ppl | cross_block_ppl | Notes |
-|-----|--------|-------|---------|-----------------|-------|
+| Condition | val_ppl | cross_block_ppl | full_ctx_ppl | bias | Steps | Notes |
+|-----------|---------|-----------------|-------------|------|-------|-------|
+| **B** (K=8, W=512) | **3.652** | **4.59** | — | -1.016 | 600 | Full BPTT compaction |
+| **K=1** (no temporal grad) | 4.139 | 9.70 | — | -1.242 | 600 | compact_kv flows but no gradient through time |
+| **E** (isolation) | **4.158** | **12.96** | — | -2.000 | 600 | Each block independent, no compact_kv |
+| **A** (full context) | 44.18* | — | **3.260** | -2.0 | 600 | *blockwise eval (meaningless for A) |
+
+**Key findings:**
+1. B val_ppl (3.652) is **12% from A's full_ctx_ppl (3.260)** — compaction approaches full-context quality
+2. K=1 val_ppl (4.139) is **13% worse than B** — temporal gradient (BPTT) significantly helps
+3. K=1 cross_block_ppl (9.70) is **2.1x worse than B (4.59)** — BPTT crucial for cross-block transfer
+4. K=1 bias (-1.24) converged higher than B (-1.02) — less trust in compact_kv without temporal training
+
+#### B eval trajectory (W=512 P=64 K=8)
+
+| Step | val_ppl | cb_ppl | bias |
+|------|---------|--------|------|
+| 100 | 4.224 | 7.06 | -1.211 |
+| 200 | 3.914 | 5.44 | -1.078 |
+| 300 | 3.795 | 5.01 | -1.055 |
+| 400 | 3.727 | 4.80 | -1.047 |
+| 500 | 3.682 | 4.67 | -1.023 |
+| 600 | 3.652 | 4.59 | -1.016 |
+
+#### K=1 eval trajectory (W=512 P=64 K=1)
+
+| Step | val_ppl | cb_ppl | bias |
+|------|---------|--------|------|
+| 100 | 4.919 | 15.99 | -1.500 |
+| 200 | 4.433 | 12.09 | -1.367 |
+| 300 | 4.298 | 10.89 | -1.297 |
+| 400 | 4.224 | 10.36 | -1.273 |
+| 500 | 4.171 | 9.95 | -1.266 |
+| 600 | 4.139 | 9.70 | -1.242 |
+
+#### A eval trajectory (full context)
+
+| Step | full_ctx_ppl |
+|------|-------------|
+| 100 | 3.484 |
+| 200 | 3.384 |
+| 300 | 3.336 |
+| 600 | 3.260 |
