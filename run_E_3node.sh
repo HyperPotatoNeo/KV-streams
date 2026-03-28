@@ -1,1 +1,0 @@
-local_scripts/run_E_3node.sh
