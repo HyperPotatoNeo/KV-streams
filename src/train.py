@@ -49,7 +49,8 @@ def setup_distributed() -> tuple[int, int, int]:
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
-    dist.init_process_group(backend="nccl")
+    from datetime import timedelta
+    dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
     torch.cuda.set_device(local_rank)
     return rank, world_size, local_rank
 
@@ -288,11 +289,13 @@ def train(config: CompactionConfig, resume_from: str | None = None) -> None:
     if rank == 0:
         try:
             import wandb
+            wandb_run_id = os.environ.get("WANDB_RUN_ID", None)
             wandb.init(
                 project=config.wandb_project,
+                id=wandb_run_id,
                 name=f"cond_{config.condition}_W{config.W}_P{config.P}_K{config.K}",
                 config=vars(config),
-                resume="allow",
+                resume="allow" if wandb_run_id else "never",
             )
             use_wandb = True
             logger.info("W&B initialized: %s", wandb.run.url)

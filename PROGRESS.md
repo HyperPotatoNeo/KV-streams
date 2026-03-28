@@ -114,21 +114,34 @@ Per-block ppl is remarkably uniform (5.5-6.4) — compaction carries information
 8. **Integration test updated**: test_integration.py A/C conditions now use manual CE loss
    matching train.py production code.
 
-#### Current runs (launched 2026-03-27 ~10:45 AM PDT)
-6 conditions across 6 NERSC Perlmutter nodes (24× A100-80GB), 4-GPU DDP per condition.
-All: 600 steps, lr=1e-4, WSD schedule, 50K examples/dataset, unfiltered data.
+#### Configuration iterations
+- **v1** (10:45 AM): 6 conditions (B W=512, D/E/K4/P32 W=128, A). B OOM'd at batch_size=4.
+- **v2** (11:55 AM): All W=512 (B/D/E/C/A). All OOM'd at batch_size=4 for W=512 blockwise.
+  A OOM'd at batch_size=2 for full 4096-token attention.
+- **v3** (12:04 PM): batch_size=2 for all W=512 blockwise. A batch_size=1.
+  B works. A crashed: port conflict (29501 in use), then stale GPU memory.
+- **v4** (CURRENT, 1:05 PM): Focus on B + A only. 3 nodes each (12 GPUs per run).
+  Fresh node allocation for A. Port 29502. Added full_context_ppl to A's eval.
 
-| Node | Condition | W | P | K | batch_total | Status |
-|------|-----------|---|---|---|-------------|--------|
-| nid008205 | **B W=512** | 512 | 64 | 8 | 512 (4×4×32) | Running |
-| nid008268 | D (random kv) | 128 | 16 | 2 | 512 (4×8×16) | Running |
-| nid008297 | E (no kv) | 128 | 16 | 2 | 512 (4×8×16) | Running |
-| nid008304 | B K=4 | 128 | 16 | 4 | 512 (4×8×16) | Running |
-| nid008448 | B P=32 | 128 | 32 | 2 | 512 (4×8×16) | Running |
-| nid008480 | A (full ctx) | full | - | - | 512 (4×2×64) | Running |
+#### Current runs (launched 2026-03-27 ~1:05 PM PDT)
+2 runs across 6 NERSC Perlmutter nodes (24× A100-80GB), 12-GPU DDP per run.
+Both: 600 steps, lr=1e-4, WSD schedule (50-step warmup), 50K examples/dataset, unfiltered data.
 
-Estimated: ~14-27h per blockwise condition, ~80h for A.
-Checkpoints every 50 steps. 48-hour node allocations. Reservation until 2026-04-05.
+| Nodes | Condition | Config | batch_total | Status |
+|-------|-----------|--------|-------------|--------|
+| nid008304+205+268 | **B** (compaction) | W=512 P=64 K=8, bs=2, ga=22 | 528 | **Step ~100, loss=1.38, bias=-1.21** |
+| nid008297+448+480 | **A** (full ctx) | Full 4096 tokens, bs=1, ga=43 | 516 | **Step ~2, training started** |
+
+B timing: ~28s/step → 600 steps ≈ 4.7 hours (+ eval pauses).
+A timing: TBD (batch_size=1 with full context is slow).
+Eval at steps 100, 200, 300, 400, 500, 600. Checkpoints every 50 steps.
+
+Other conditions (C/D/E) deferred — will run on freed nodes after B/A complete.
+
+#### Additional code changes (v4)
+- evaluate.py: Added `full_context_ppl` metric for condition A (standard HF forward, no blockwise)
+- run_A_3node.sh: port 29502 (avoid conflict with B on 29500)
+- All W=512 blockwise conditions require batch_size=2 (batch_size=4 OOMs with K=8 eager attention)
 
 | Exp | Config | Steps | val_ppl | cross_block_ppl | Notes |
 |-----|--------|-------|---------|-----------------|-------|

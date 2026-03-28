@@ -143,12 +143,34 @@ def evaluate(
     embed_norms = model.compaction_embeddings.norm(dim=-1).mean().item()
     attn_bias_mean = model.compact_attn_bias.mean().item()
 
+    # Full-context PPL (no blockwise, no compaction — true upper bound)
+    # Only computed for condition A since it's the only one trained full-context
+    full_context_ppl = float("nan")
+    if config.condition == "A":
+        fc_loss = 0.0
+        fc_tokens = 0
+        for batch in val_loader:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits.float()
+            valid = labels != -100
+            nv = valid.sum().item()
+            if nv > 0:
+                loss = F.cross_entropy(logits[valid], labels[valid], reduction="sum")
+                fc_loss += loss.item()
+                fc_tokens += nv
+        if fc_tokens > 0:
+            full_context_ppl = math.exp(fc_loss / fc_tokens)
+
     model.train()
 
     return {
         "cross_block_ppl": cross_block_ppl,
         "per_block_ppl": per_block_ppl,
         "val_ppl": val_ppl,
+        "full_context_ppl": full_context_ppl,
         "embed_norms": embed_norms,
         "attn_bias_mean": attn_bias_mean,
     }
@@ -168,6 +190,9 @@ def print_metrics(metrics: dict, config: CompactionConfig) -> None:
 
     print(f"\nval_ppl:          {metrics['val_ppl']:.4f}")
     print(f"cross_block_ppl:  {metrics['cross_block_ppl']:.4f}")
+    fc_ppl = metrics.get("full_context_ppl", float("nan"))
+    if not math.isnan(fc_ppl):
+        print(f"full_context_ppl: {fc_ppl:.4f}  (true upper bound)")
     print(f"embed_norms:      {metrics['embed_norms']:.4f}")
     print(f"attn_bias_mean:   {metrics['attn_bias_mean']:.4f}")
 

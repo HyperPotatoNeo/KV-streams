@@ -206,27 +206,98 @@ def _process_example(
     }
 
 
+_CACHE_VERSION = "v3"  # Bump when changing _process_example logic (label shift, sanitization, etc.)
+
+
+def _cache_key(config: CompactionConfig) -> str:
+    """Deterministic cache key based on data-affecting config fields."""
+    import hashlib
+    key_parts = (
+        _CACHE_VERSION,
+        config.model_name,
+        config.think_sft_path,
+        config.instruct_sft_path,
+        str(config.max_examples_per_dataset),
+        str(config.seed),
+        str(config.W),
+        str(config.max_seq_len),
+        str(config.val_fraction),
+    )
+    h = hashlib.md5("|".join(key_parts).encode()).hexdigest()[:12]
+    return f"processed_{_CACHE_VERSION}_W{config.W}_N{config.max_examples_per_dataset}_{h}"
+
+
 def load_data(
     config: CompactionConfig,
     tokenizer,
+    cache_dir: str = "/pscratch/sd/s/siddart2/kv-self-compaction-phase2/data_cache",
 ) -> tuple[CompactionDataset, CompactionDataset]:
-    """Load Dolci Think-SFT + Instruct-SFT, preprocess, and split into train/val.
+    """Load tokenized dataset, using cache if available.
 
-    Pipeline:
-    1. Load both datasets from HuggingFace
-    2. Subsample if max_examples_per_dataset is set (Phase 2a: 5000 each)
-    3. Interleave (alternate rows from each dataset for balanced mixing)
-    4. Process each example: chat template -> tokenize -> label mask -> pad
-    5. Split 95% train / 5% val
+    If a cached .pt file exists for this config, loads from it (~2s).
+    Otherwise falls back to full tokenization (~20 min for 100K examples).
 
     Args:
         config: CompactionConfig with data paths, max_examples, W, max_seq_len.
+        cache_dir: Directory for cached .pt files.
         tokenizer: Qwen3-0.6B-Base tokenizer with built-in chat template.
 
     Returns:
         (train_dataset, val_dataset) — CompactionDataset instances with
         input_ids, labels, attention_mask fields.
     """
+    import os
+
+    # Try loading from cache first
+    key = _cache_key(config)
+    cache_path = os.path.join(cache_dir, f"{key}.pt")
+    if os.path.exists(cache_path):
+        logger.info("Loading cached dataset from %s", cache_path)
+        data = torch.load(cache_path, weights_only=False)
+        assert data["config_key"] == key, f"Cache key mismatch: {data['config_key']} != {key}"
+        train_ds = CompactionDataset(
+            input_ids=data["train_input_ids"],
+            labels=data["train_labels"],
+            attention_masks=data["train_attention_masks"],
+        )
+        val_ds = CompactionDataset(
+            input_ids=data["val_input_ids"],
+            labels=data["val_labels"],
+            attention_masks=data["val_attention_masks"],
+        )
+        logger.info("Loaded %d train + %d val from cache", len(train_ds), len(val_ds))
+        return train_ds, val_ds
+
+    # No cache — do full tokenization
+    logger.info("No cache found, running full tokenization...")
+    train_ds, val_ds = _load_data_raw(config, tokenizer)
+
+    # Save cache for next time (atomic write to avoid DDP race)
+    # All ranks tokenize (needed for memory), but only rank 0 writes cache
+    rank = int(os.environ.get("RANK", "0"))
+    if rank == 0:
+        os.makedirs(cache_dir, exist_ok=True)
+        tmp_path = cache_path + ".tmp"
+        torch.save({
+            "train_input_ids": train_ds.input_ids,
+            "train_labels": train_ds.labels,
+            "train_attention_masks": train_ds.attention_masks,
+            "val_input_ids": val_ds.input_ids,
+            "val_labels": val_ds.labels,
+            "val_attention_masks": val_ds.attention_masks,
+            "config_key": key,
+        }, tmp_path)
+        os.rename(tmp_path, cache_path)  # atomic on POSIX
+        logger.info("Cached to %s (%.1f MB)", cache_path, os.path.getsize(cache_path) / 1e6)
+
+    return train_ds, val_ds
+
+
+def _load_data_raw(
+    config: CompactionConfig,
+    tokenizer,
+) -> tuple[CompactionDataset, CompactionDataset]:
+    """Raw data loading without cache. Called by load_data and save_processed_data."""
     logger.info("Loading Think-SFT dataset: %s", config.think_sft_path)
     think_ds = load_dataset(config.think_sft_path, split="train")
 
