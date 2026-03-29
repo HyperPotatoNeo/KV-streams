@@ -18,11 +18,11 @@ Standard supervised fine-tuning with full 4096-token attention. No compaction, n
 ### 2. Learned Compaction, Deep BPTT (Condition B, K=8)
 KV Self-Compaction with K=8 BPTT depth. Gradients flow across 8 consecutive blocks before truncation, giving the compaction embeddings a strong learning signal about what information to preserve for tokens 8 blocks ahead. This is the **primary method under evaluation**.
 
-### 3. Learned Compaction, Shallow BPTT (Condition B, K=1)
-Same compaction mechanism but with K=1 BPTT depth. Gradients only flow across 1 block boundary. Tests whether deep BPTT is necessary for learning good compaction.
+### 3. Learned Compaction, no BPTT (Condition B, K=1)
+Same compaction mechanism but with K=1 BPTT depth. Gradients only flow across 1 block boundary (SO NO GRADEINTS ACROSS BLOCKS). Tests whether deep BPTT is necessary for learning good compaction, or if the KVs without any training can still carry information.
 
 ### 4. Blockwise, No Cross-Block State (Condition E)
-Processes text in W=512-token blocks like Condition B, but discards all state between blocks. Equivalent to a 512-token truncation window with no carryover. The model still trains with compaction tokens within each block but they are never used across blocks. This is the **fairest baseline** for assessing whether compact_kv carries useful information.
+Processes text in W=512-token blocks like Condition B, but discards all state between blocks. Equivalent to a 512-token truncation window with no carryover (Markovian Thinker). This is the **fairest baseline** for assessing whether compact_kv carries useful information.
 
 ### 5. Attention Matching Compression (Post-Hoc, on Condition A)
 Takes the full-context model (Condition A) and applies post-hoc KV cache compression at inference time. Every 512 tokens, random query probes score each KV entry by attention variance, and the top-64 are kept. No training for compression — tests whether a training-free approach can match learned compaction.
