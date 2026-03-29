@@ -215,3 +215,26 @@ Other conditions (C/D/E) deferred — will run on freed nodes after B/A complete
 | 200 | 3.384 |
 | 300 | 3.336 |
 | 600 | 3.260 |
+
+---
+
+## Phase 2c: GSM8K Downstream Evaluation (2026-03-28)
+
+### Inference Engine
+Built custom HuggingFace-based inference engine (transformers v5.4.0, eager attention).
+7 modules, 45/45 tests, 4 adversarial review rounds (7 bugs found and fixed).
+Logit equivalence verified vs training code. See `src/inference/` and `eval/progress.md`.
+
+### GSM8K Results (Step 600, 50 examples, 4096 max tokens, greedy, 4-GPU parallel)
+
+| Method | val_ppl | GSM8K | vs Full |
+|--------|---------|-------|---------|
+| Full Context SFT | 3.26 (full_ctx) | **32.0%** | 100% |
+| Learned Compaction K=8 | 3.65 | **28.0%** | 87.5% |
+| No Cross-Block (E) | 4.16 | **18.0%** | 56.3% |
+| Attn Matching (post-hoc) | N/A | **10.0%** | 31.3% |
+| Learned Compaction K=1 | 4.14 | **8.0%** | 25.0% |
+
+**Key finding**: Learned compaction (K=8) retains 87.5% of full-context GSM8K accuracy at 8x KV compression.
+BPTT depth critical: K=8 (28%) >> K=1 (8%). Learned >> post-hoc attention matching (28% vs 10%).
+Full report: `report/phase2_results.md`
