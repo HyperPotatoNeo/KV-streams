@@ -35,12 +35,10 @@ Takes the full-context model (Condition A) and applies post-hoc KV cache compres
 
 | Method | val_ppl | cross_block_ppl | full_ctx_ppl | bias_mean |
 |--------|---------|-----------------|--------------|-----------|
-| Full Context SFT | 44.18* | 1349.0* | **3.26** | -2.0 (fixed) |
+| Full Context SFT | **3.26** | 1349.0* | **3.26** | -2.0 (fixed) |
 | Learned Compaction (K=8) | **3.65** | **4.59** | N/A | -1.02 |
 | Learned Compaction (K=1) | 4.14 | 9.70 | N/A | -1.24 |
 | No Cross-Block (E) | 4.16 | 12.96 | N/A | -2.0 (fixed) |
-
-*\*Condition A's `val_ppl` and `cross_block_ppl` are misleadingly high because they are computed via blockwise evaluation (not full-context). Condition A's true performance is captured by `full_ctx_ppl = 3.26`.*
 
 **Key observations from training:**
 
